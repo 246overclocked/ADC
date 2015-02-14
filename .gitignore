@@ -1,0 +1,8 @@
+# ignore emacs temporary and autosaved files
+*~
+\#*#
+.#*
+
+# ignore bin and obj subdirectories
+bin/
+obj/
