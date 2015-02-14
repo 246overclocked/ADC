@@ -112,9 +112,11 @@ void Usage() {
             << "              to the standard output" << endl;
 }
 
+// TODO: Make the code use this constant, or better yet make it a command line argument
+const int ADC_PORTS_TO_READ = 8;
 int adc[8];
 int sock;
-unsigned short transmitBuf[16];
+unsigned short transmitBuf[17];
 
 void callback(union sigval arg) {
 	char buf[30];
@@ -123,10 +125,11 @@ void callback(union sigval arg) {
 		// TODO: Read the ADC port(s) here and send the data via UDP
 		lseek(adc[i], 0, SEEK_SET);
 		int result = read(adc[i], buf, 4);
-		transmitBuf[i * 2] = i + 1;
-		transmitBuf[(i * 2) + 1] = (unsigned short)atoi(buf);
+		transmitBuf[(i * 2) + 1] = i + 1;
+		transmitBuf[(i * 2) + 2] = (unsigned short)atoi(buf);
 	}
-	if(sendto(sock, transmitBuf, 32, 0, (struct sockaddr *)&targetSockAddr, sizeof(targetSockAddr)) != 32) {
+	transmitBuf[0] = 8;
+	if(sendto(sock, transmitBuf, 34, 0, (struct sockaddr *)&targetSockAddr, sizeof(targetSockAddr)) != 34) {
 		perror("Mismatch in number of bytes sent");
 	}
 }
