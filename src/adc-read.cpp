@@ -103,11 +103,13 @@ int createUdpSocket(char *serverName, short port) {
 }
 
 void Usage() {
-  std::cerr << "Usage: adc-read -h <host> -p <port> [-v]" << endl
+  std::cerr << "Usage: adc-read -h <host> -p <port> -f <frequency> [-v]" << endl
             << "Where: <host> is either the IP address or mDNS name of a host that's expecting" << endl
             << "              to receive parsed messages on the speficied <port>." << endl
             << "       <port> should be a number in the range of 5800-5810 inclusive, in order" << endl
             << "              to comply with FRC 2015 rules" << endl
+	    << "           -f Poll the ADC ports at the specified frequency" << endl
+	    << "           -n Number of ports to poll, always starting on ADC0" << endl
             << "           -v (optional) run in Verbose mode, printing some debug information" << endl
             << "              to the standard output" << endl;
 }
@@ -116,20 +118,22 @@ void Usage() {
 const int ADC_PORTS_TO_READ = 8;
 int adc[8];
 int sock;
-unsigned short transmitBuf[17];
+uint8_t transmitBuf[32];
+uint8_t adcCount = -1;
 
 void callback(union sigval arg) {
 	char buf[30];
-	for (int i = 0; i < 8; i++) {
+	transmitBuf[0] = adcCount;
+	for (int i = 0; i < adcCount; i++) {
 		memset(buf, 0, sizeof(buf));
 		// TODO: Read the ADC port(s) here and send the data via UDP
 		lseek(adc[i], 0, SEEK_SET);
-		int result = read(adc[i], buf, 4);
-		transmitBuf[(i * 2) + 1] = i + 1;
-		transmitBuf[(i * 2) + 2] = (unsigned short)atoi(buf);
+		read(adc[i], buf, 4);
+		transmitBuf[(i * 3) + 1] = (uint8_t)(i + 1);
+		uint16_t sample = (unsigned short)atoi(buf);
+		memcpy(&transmitBuf[(i * 3) + 2], &sample, 2);
 	}
-	transmitBuf[0] = 8;
-	if(sendto(sock, transmitBuf, 34, 0, (struct sockaddr *)&targetSockAddr, sizeof(targetSockAddr)) != 34) {
+	if(sendto(sock, transmitBuf, (3 * adcCount) + 1, 0, (struct sockaddr *)&targetSockAddr, sizeof(targetSockAddr)) != (3 * adcCount) + 1) {
 		perror("Mismatch in number of bytes sent");
 	}
 }
@@ -146,7 +150,7 @@ int main(int argc, char **argv) {
 	
 	memset(host, 0, sizeof(host));
 	memset(adc, 0xFF, sizeof(adc));
-  while ((opt = getopt(argc, argv, "vf:h:p:")) != -1) {
+  while ((opt = getopt(argc, argv, "vf:h:p:n:")) != -1) {
   	switch (opt) {
 			case 'h':
 				strncpy(host, optarg, sizeof(host) - 1);
@@ -165,6 +169,9 @@ int main(int argc, char **argv) {
 				cout << "Timer frequency: " << frequencyHz << " Hz. Period: " 
 						 << seconds << " sec + " << nanoseconds << " nsec" << endl;
 				break;
+			case 'n':
+				adcCount = atoi(optarg);
+				break;
 			case 'v':
 				verbose = true;
 				break;
@@ -175,7 +182,7 @@ int main(int argc, char **argv) {
 				break;
   	}
   }
-  if (host[0] == '\0' || port < 0 || port > 32767) {
+  if (host[0] == '\0' || port < 0 || port > 32767 || adcCount <= 0) {
   	Usage();
   	exit(-1);
   }
