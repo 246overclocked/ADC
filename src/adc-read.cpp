@@ -47,16 +47,24 @@ using namespace std;
 
 bool verbose = false;
 
-struct sockaddr targetSockAddr; 
-int createUdpSocket(char *serverName, short port) {
+const int MAX_HOSTSTRING_LENGTH = 32;
+const int MAX_PORTSTRING_LENGTH = 8;
+const int MAX_ENDPOINT_COUNT = 10;
+struct udp_endpoint {
+	char hostString[MAX_HOSTSTRING_LENGTH];
+	char portString[MAX_PORTSTRING_LENGTH];
+	struct sockaddr sockAddr;
+	int socket;
+};
+
+struct udp_endpoint adcEndpoints[MAX_ENDPOINT_COUNT];
+int adcEndpointCount = 0;
+
+void initialize_udp_endpoint(struct udp_endpoint *endpoint) {
 	struct addrinfo hints;
 	struct addrinfo *result, *rp;
-	int sock, s;
-	if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-		perror("cannot create socket");
-		throw -1;
-	}
-	
+	int s;
+
 	memset(&hints, 0, sizeof(struct addrinfo));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_DGRAM;
@@ -65,11 +73,8 @@ int createUdpSocket(char *serverName, short port) {
 	hints.ai_canonname = NULL;
 	hints.ai_addr = NULL;
 	hints.ai_next = NULL;
-	
-	char portBuf[16];
-	memset(portBuf, 0, sizeof(portBuf));
-	sprintf(portBuf, "%d", port);
-	s = getaddrinfo(serverName, portBuf , &hints, &result);
+
+	s = getaddrinfo(endpoint->hostString, endpoint->portString, &hints, &result);
 	if (s != 0) {
 		cerr << "getaddrinfo failed: " << gai_strerror(s) << endl;
 		throw -1;
@@ -80,11 +85,12 @@ int createUdpSocket(char *serverName, short port) {
 	// and try the next address
 	char host_ip[20];
 	for (rp = result; rp != NULL; rp = rp->ai_next) {
-		sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+		int sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
 		if (sock > 0) {
 			inet_ntop(AF_INET, &(((struct sockaddr_in *)rp->ai_addr)->sin_addr), host_ip, 20);
-			if (verbose) cout << "UDP socket to " << host_ip << " established" << endl;
-			memcpy(&targetSockAddr, rp->ai_addr, rp->ai_addrlen);
+			if (verbose) cout << "UDP socket to " << host_ip << " created" << endl;
+			endpoint->socket = sock;
+			memcpy(&endpoint->sockAddr, rp->ai_addr, rp->ai_addrlen);
 			break;
 		}
 		//if (bind(sock, rp->ai_addr, rp->ai_addrlen) == 0) break;
@@ -94,27 +100,47 @@ int createUdpSocket(char *serverName, short port) {
 	}
 	if (rp == NULL) {
 		freeaddrinfo(result);
-		cerr << "Could not get address info for host " << serverName << endl;
+		cerr << "Could not get address info for host " << endpoint->hostString << endl;
 		throw -1;
 	}
 	freeaddrinfo(result);
-	
-	return sock;
 }
 
 void Usage() {
-  std::cerr << "Usage: adc-read -h <host> -p <port> -f <frequency> [-v]" << endl
-            << "Where: <host> is either the IP address or mDNS name of a host that's expecting" << endl
-            << "              to receive parsed messages on the speficied <port>." << endl
-            << "       <port> should be a number in the range of 5800-5810 inclusive, in order" << endl
-            << "              to comply with FRC 2015 rules" << endl
+  std::cerr << "Usage: adc-read -h <host> -f <frequency> [-v] [-n <adcPortCount>]" << endl
+            << "Where: <host-port-pair> are pairs of either the IP address or mDNS name of" << endl
+	    << "              hosts and corresponding ports that are expecting" << endl
+            << "              to receive parsed messages on the specified port." << endl
+	    << "              an example would be laptop1.local:5800,roborio-local:5801" << endl
+            << "<adcPortCount> is the number of ADC ports that will be read" << endl
+	    << "              on the local BeagleBone Black. Ports are always read" <<  endl
+	    << "              consecutively starting with ADC0" << endl
 	    << "           -f Poll the ADC ports at the specified frequency" << endl
 	    << "           -n Number of ports to poll, always starting on ADC0" << endl
             << "           -v (optional) run in Verbose mode, printing some debug information" << endl
             << "              to the standard output" << endl;
 }
 
-// TODO: Make the code use this constant, or better yet make it a command line argument
+int parseHostPortPairList(char *inputList, struct udp_endpoint *endpoints) {
+	char *curPair, *pairContext;
+	char *hostBuf, *portBuf, *hostContext;
+	int count = 0;
+
+	curPair = inputList;
+	for (int i = 0; i < MAX_ENDPOINT_COUNT; i++) {
+		curPair = strtok_r(inputList, ",", &pairContext);
+		inputList = NULL;
+		if (curPair == NULL) break;
+		hostBuf = strtok_r(curPair, ":", &hostContext);
+		portBuf = strtok_r(NULL, ":", &hostContext);
+		if (hostBuf == NULL || portBuf == NULL) return -1;
+		strncpy(endpoints[i].hostString, hostBuf, MAX_HOSTSTRING_LENGTH);
+		strncpy(endpoints[i].portString, portBuf, MAX_PORTSTRING_LENGTH);
+		count++;
+	} 
+	return count;
+}
+
 const int ADC_PORTS_TO_READ = 8;
 int adc[8];
 int sock;
@@ -133,8 +159,11 @@ void callback(union sigval arg) {
 		uint16_t sample = (unsigned short)atoi(buf);
 		memcpy(&transmitBuf[(i * 3) + 2], &sample, 2);
 	}
-	if(sendto(sock, transmitBuf, (3 * adcCount) + 1, 0, (struct sockaddr *)&targetSockAddr, sizeof(targetSockAddr)) != (3 * adcCount) + 1) {
-		perror("Mismatch in number of bytes sent");
+	for (int i = 0; i < adcEndpointCount; i++) {
+		if(sendto(adcEndpoints[i].socket, transmitBuf, (3 * adcCount) + 1, 0, 
+							(struct sockaddr *)&adcEndpoints[i].sockAddr, sizeof(struct sockaddr)) != (3 * adcCount) + 1) {
+			perror("Mismatch in number of ADC bytes sent");
+		}
 	}
 }
 
@@ -143,6 +172,7 @@ int main(int argc, char **argv) {
 	int opt;
 	char host[32];
 	int port = -1;
+	char *pairbuf;
 	long int seconds = -1;
 	long int nanoseconds = -1;
 	
@@ -153,12 +183,16 @@ int main(int argc, char **argv) {
   while ((opt = getopt(argc, argv, "vf:h:p:n:")) != -1) {
   	switch (opt) {
 			case 'h':
-				strncpy(host, optarg, sizeof(host) - 1);
-				cout << "Host: " << host << endl;
-				break;
-			case 'p':
-				port = atoi(optarg);
-				cout << "Port: " << (int)port << endl;
+	  			pairbuf=new char[strlen(optarg) + 1];
+	  			strcpy(pairbuf, optarg);
+	  			adcEndpointCount = parseHostPortPairList(pairbuf, adcEndpoints);
+	  			if (adcEndpointCount <= 0) {
+						cerr << "-l <adcEndpointList> was missing or improperly formatted, use host1:port1[,host2:port2[,...]]" 
+						     << endl << endl;
+						Usage();
+						exit(-1);
+	  			}
+	  			delete[] pairbuf;
 				break;
 			case 'f':
 				frequencyHz = atof(optarg);
@@ -182,7 +216,7 @@ int main(int argc, char **argv) {
 				break;
   	}
   }
-  if (host[0] == '\0' || port < 0 || port > 32767 || adcCount <= 0) {
+  if (adcEndpointCount == 0 || adcCount <= 0) {
   	Usage();
   	exit(-1);
   }
@@ -192,9 +226,10 @@ int main(int argc, char **argv) {
 	}
 	//exit(1);
   //MulticastClient *client = new MulticastClient((char *)"226.0.0.1", (short)5800, (char *)"eth0");
-  sock = createUdpSocket((char *)host, port);
+	// Create the sockets we'll need to communicate with the specified endpoints
+	for (int i = 0; i < adcEndpointCount; i++) initialize_udp_endpoint(&adcEndpoints[i]);
 
-	for (int i = 0; i < 8; i++) {
+	for (int i = 0; i < adcCount; i++) {
 		char device[128];
 		sprintf(device, "/sys/bus/iio/devices/iio:device0/in_voltage%d_raw", i);
 		adc[i] = open(device, O_RDONLY);
