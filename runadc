@@ -3,6 +3,7 @@
 while [ 1 ]
 do
 
-	/home/root/ADC/bin/adc-read -h roborio-246.local -p 5800 -f 50 -n 1 -v
+	/home/root/ADC/bin/adc-read -h roborio-246.local -p 5800 -f 50 -n 3 -v
+#	/home/root/ADC/bin/adc-read -h 10.2.46.145 -p 5800 -f 50 -n 3 -v
 	sleep 10
 done
